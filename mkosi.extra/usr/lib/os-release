@@ -1,0 +1,10 @@
+NAME="RegrooveOS"
+ID=regrooveos
+ID_LIKE=debian
+PRETTY_NAME="RegrooveOS 1 (trixie)"
+VERSION="1 (trixie)"
+VERSION_ID="1"
+VERSION_CODENAME=trixie
+ANSI_COLOR="1;33"
+IMAGE_ID="regrooveos"
+IMAGE_VERSION="1"

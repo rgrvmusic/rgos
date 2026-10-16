@@ -1,0 +1,66 @@
+# RegrooveOS kernel configuration fragment.
+#
+# Merged over the Raspberry Pi board defconfig with the kernel's own
+# scripts/kconfig/merge_config.sh. Run `make olddefconfig` afterwards: this
+# fragment states intent, and the Kconfig dependency solver decides the
+# transitive settings (a bare CONFIG_PREEMPT_RT=y will not apply cleanly on
+# its own).
+#
+# Verified fact, not assumption: PREEMPT_RT was fully mainlined in Linux
+# 6.12, so realtime is a config flag here rather than the out-of-tree
+# patchset it used to be. The Move itself ships 5.15.92-rt57, so its
+# userspace already expects RT scheduling semantics.
+
+# --- Realtime -------------------------------------------------------------
+
+# Needed for the preemption model to be selectable at all on arm64.
+CONFIG_EXPERT=y
+CONFIG_PREEMPT_RT=y
+
+CONFIG_HZ_1000=y
+CONFIG_HZ=1000
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_NO_HZ_FULL=y
+
+# Per-core isolation machinery for the audio threads. The runtime behaviour
+# is opted into from the kernel command line, not here -- see README.md for
+# why isolcpus= is deliberately not on by default.
+CONFIG_CPU_ISOLATION=y
+CONFIG_RCU_NOCB_CPU=y
+
+# --- Boot without an initramfs -------------------------------------------
+#
+# config.txt sets auto_initramfs=0 and cmdline.txt mounts root by pinned
+# PARTUUID, so everything needed to reach the root filesystem has to be
+# built in. The board defconfigs build these as modules by default, which
+# would panic at boot with "unable to mount root fs".
+
+CONFIG_EXT4_FS=y
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PLTFM=y
+# Pi 4 / CM4 (BCM2711) SD/eMMC controller.
+CONFIG_MMC_SDHCI_IPROC=y
+# Pi 5 / CM5 (BCM2712) SD controller.
+CONFIG_MMC_SDHCI_BRCMSTB=y
+
+# --- Modules --------------------------------------------------------------
+#
+# bcm2711_defconfig sets MODULE_COMPRESS_XZ, so modules_install writes every
+# module as .ko.xz -- but it does not set MODULE_DECOMPRESS, and per
+# kernel/module/Kconfig that is an independent bool which MODULE_COMPRESS_XZ
+# never selects. Without it the kernel cannot load its own modules; kmod has
+# to decompress them in userspace, which it does only by dlopen()ing
+# liblzma.so.5 at runtime.
+#
+# Measured against kmod 34.2 (what trixie ships): `ldd /usr/bin/kmod` shows no
+# liblzma at all, yet the binary carries kmod_file_load_xz and the string
+# "xz: can't load and resolve symbols". So whether any module loads -- vc4 and
+# therefore HDMI among them -- rests on a library no package list asks for. It
+# is present today only because systemd links it for journal compression.
+#
+# This makes the kernel self-sufficient, which is the same reasoning that
+# builds ext4 and the MMC stack in rather than leaving them modular. Kconfig
+# selects XZ_DEC alongside it, so the xz decompressor is built in too.
+CONFIG_MODULE_DECOMPRESS=y

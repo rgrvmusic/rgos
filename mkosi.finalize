@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# mkosi.finalize -- runs on the host, after the image tree is assembled and
+# before systemd-repart lays out partitions.
+#
+# The Raspberry Pi kernel is built outside mkosi (kernel/build.sh) because
+# it needs CONFIG_PREEMPT_RT and a board defconfig that no distribution
+# package provides. This script drops its output into /boot/firmware, which
+# mkosi.repart/00-boot.conf then copies onto the boot partition.
+
+set -euo pipefail
+
+: "${BUILDROOT:?mkosi.finalize must be invoked by mkosi}"
+: "${SRCDIR:?mkosi.finalize must be invoked by mkosi}"
+
+KERNEL_OUT="$SRCDIR/kernel/out"
+FIRMWARE="$BUILDROOT/boot/firmware"
+
+if [ ! -f "$KERNEL_OUT/kernel8.img" ]; then
+    cat >&2 <<EOF
+
+error: no kernel at $KERNEL_OUT/kernel8.img
+
+The image would be unbootable: the Pi firmware loads kernel8.img from the
+boot partition, and no distribution package supplies a kernel with
+CONFIG_PREEMPT_RT and RP1 support for Pi 5 / CM5.
+
+Build it first, then rebuild the image:
+
+    make kernel
+    make build
+
+EOF
+    exit 1
+fi
+
+install -d "$FIRMWARE"
+install -m 0644 "$KERNEL_OUT/kernel8.img" "$FIRMWARE/kernel8.img"
+
+# Device trees. The Pi firmware selects the right one from the board model,
+# so all of them go on the boot partition.
+if compgen -G "$KERNEL_OUT/dts/*.dtb" >/dev/null; then
+    install -m 0644 "$KERNEL_OUT"/dts/*.dtb "$FIRMWARE/"
+else
+    echo "warning: no .dtb files in $KERNEL_OUT/dts -- the firmware needs a" >&2
+    echo "         matching device tree to boot." >&2
+fi
+
+# Overlays, for anything config.txt references from the [pi4]/[pi5] sections.
+if compgen -G "$KERNEL_OUT/overlays/*.dtbo" >/dev/null; then
+    install -d "$FIRMWARE/overlays"
+    install -m 0644 "$KERNEL_OUT"/overlays/*.dtbo "$FIRMWARE/overlays/"
+fi
+
+# The firmware's overlay routing table belongs at the boot partition ROOT,
+# next to start4.elf -- not in overlays/. The firmware consults it to rewrite
+# an overlay name into the board-specific flavour (vc4-kms-v3d-pi4 on a
+# BCM2711, vc4-kms-v3d-pi5 on a BCM2712).
+#
+# It is easy to drop: the kernel builds it as an ordinary .dtb inside the
+# overlays directory, so a glob of overlays/*.dtbo misses it. Ship it for the
+# overlays that rely on the routing. Do not rely on it for KMS, though:
+# measured on firmware 1.20250305, dtoverlay=vc4-kms-v3d still resolved to
+# the BCM2835 overlay on a CM4 with this file present, and the firmware
+# dropped it -- config.txt names the per-SoC variants explicitly instead.
+#
+# (When the routing does not happen, the generic BCM2835 overlay cannot
+# resolve against BCM2711 and the display stays on bcm2708_fb: HDMI0 only,
+# no /dev/dri, no HDMI1, and the console only returns after a cable replug.)
+if [ -f "$KERNEL_OUT/overlay_map.dtb" ]; then
+    install -m 0644 "$KERNEL_OUT/overlay_map.dtb" "$FIRMWARE/overlay_map.dtb"
+else
+    echo "warning: no overlay_map.dtb in $KERNEL_OUT -- dtoverlay=vc4-kms-v3d" >&2
+    echo "         will apply the generic BCM2835 overlay, which the firmware" >&2
+    echo "         rejects on a Pi 4/CM4; HDMI stays on the firmware framebuffer." >&2
+fi
+
+# Modules. bcm2711_defconfig builds the display stack (DRM_VC4/DRM_V3D) and
+# much of the SoC audio path as =m, so without these installed the image has
+# no HDMI -- config.txt passes dtoverlay=vc4-kms-v3d, which hands the display
+# to the KMS driver and takes it away from the firmware framebuffer, leaving
+# nothing to drive it.
+#
+# modules_install already ran depmod against this tree, so modules.dep and
+# the module ordering are correct as copied; no depmod is needed here.
+if [ -d "$KERNEL_OUT/modules/lib/modules" ]; then
+    install -d "$BUILDROOT/lib/modules"
+    cp -a "$KERNEL_OUT/modules/lib/modules/." "$BUILDROOT/lib/modules/"
+else
+    echo "warning: no modules in $KERNEL_OUT/modules -- anything built as =m," >&2
+    echo "         including the display driver, will be missing from the image." >&2
+fi
+
+# raspi-firmware (from Debian's non-free-firmware component) installs the
+# start*.elf / fixup*.dat / bootcode.bin blobs here via the package. Warn
+# rather than fail: they can legitimately be supplied another way, but the
+# image will not boot without them.
+if ! compgen -G "$FIRMWARE/start*.elf" >/dev/null; then
+    echo "warning: no start*.elf in $FIRMWARE -- if the raspi-firmware package" >&2
+    echo "         was not installed, the boot partition is incomplete." >&2
+fi
+
+# ...but the package's blobs are too old to boot this disk. Debian trixie
+# ships raspi-firmware 1.20240424, and that firmware refuses the protective
+# MBR entry (type 0xEE) that every GPT disk starts with: on a Pi 4 it hangs at
+# the rainbow screen with the ACT LED signalling "kernel not found", although
+# the boot files are all present. 1.20250305 is the first upstream release
+# that boots this layout (Debian bug #1130560). The blobs are closed source,
+# so firmware/ vendors the three files and they are installed here, after the
+# package, to overwrite the old ones. start4.elf and fixup4.dat are a matched
+# pair and must come from the same release.
+VENDORED_FIRMWARE="$SRCDIR/firmware"
+if [ -f "$VENDORED_FIRMWARE/start4.elf" ] && \
+   [ -f "$VENDORED_FIRMWARE/fixup4.dat" ]; then
+    install -m 0644 "$VENDORED_FIRMWARE/start4.elf" "$FIRMWARE/start4.elf"
+    install -m 0644 "$VENDORED_FIRMWARE/fixup4.dat" "$FIRMWARE/fixup4.dat"
+    if [ -f "$VENDORED_FIRMWARE/bootcode.bin" ]; then
+        install -m 0644 "$VENDORED_FIRMWARE/bootcode.bin" \
+                "$FIRMWARE/bootcode.bin"
+    fi
+else
+    echo "warning: no vendored firmware in $VENDORED_FIRMWARE; the package's" >&2
+    echo "         blobs are used, and 1.20240424 cannot boot a GPT disk" >&2
+    echo "         on a Pi 4. See README, 'three load-bearing properties'." >&2
+fi
+
+# The dev profile sets RootPassword=regroove and installs openssh-server, but
+# Debian's sshd defaults to PermitRootLogin prohibit-password, which makes
+# that password useless over the network -- and the network is the only way
+# in when the console is not behaving. Guarded on sshd being present, so the
+# base image, which has no sshd at all, never ships a root-password policy.
+if [ -x "$BUILDROOT/usr/sbin/sshd" ]; then
+    install -d "$BUILDROOT/etc/ssh/sshd_config.d"
+    cat > "$BUILDROOT/etc/ssh/sshd_config.d/10-regroove-dev.conf" <<'EOF'
+# Dev image only; written by mkosi.finalize. Debian's sshd refuses root
+# password logins by default (PermitRootLogin prohibit-password).
+PermitRootLogin yes
+PasswordAuthentication yes
+EOF
+    chmod 0644 "$BUILDROOT/etc/ssh/sshd_config.d/10-regroove-dev.conf"
+fi
+
+# systemd's package enables the first-boot wizard, whose condition is
+# ConditionFirstBoot=yes -- true while /etc/machine-id reads "uninitialized",
+# which is exactly what the image ships. Its ExecStart is
+#
+#     systemd-firstboot --prompt-locale --prompt-keymap --prompt-timezone
+#                       --prompt-root-password
+#
+# with StandardInput/Output/Error=tty, and it is ordered Before=sysinit.target.
+# So on the first boot of every card this image is written to, the boot stops
+# at an interactive prompt on /dev/console. On this cmdline /dev/console is
+# ttyAMA1, the serial port: the HDMI console shows kernel messages and then
+# nothing, no keystroke is possible, sysinit.target never completes, and no
+# getty starts anywhere. The journal simply ends.
+#
+# Masked rather than preset-disabled: a mask shadows the vendor unit no matter
+# what `systemctl preset-all` decides, and the image is already configured
+# (hostname, locale defaults, root password in the dev profile), so there is
+# nothing for the wizard to ask. systemd still generates a machine-id on boot.
+ln -sf /dev/null "$BUILDROOT/etc/systemd/system/systemd-firstboot.service"
+
+# DHCP must never hold up the boot. 20-wired.network marks the link
+# RequiredForOnline=no for that reason, but on systemd 257 that is not enough
+# and is in fact worse than nothing: with the only managed link marked "not
+# required", networkd reports its Online state as "unknown", and
+# systemd-networkd-wait-online then has no link it considers online. It sits
+# for its full 120-second timeout, fails, leaves is-system-running at
+# "degraded", and every unit ordered after network-online.target (podman's
+# auto-update among them) waits out those two minutes.
+#
+# Masking the wait-online unit makes network-online.target a no-op: it is
+# reached immediately whether or not a cable is present, DHCP keeps running
+# in the background, and the address appears as soon as a server answers.
+ln -sf /dev/null \
+   "$BUILDROOT/etc/systemd/system/systemd-networkd-wait-online.service"
+
+# DNS. networkd is a DHCP client, not a resolver: it records the nameservers
+# it receives in its own link state and stops there. systemd-resolved is what
+# turns them into something glibc can use, and Debian's package deliberately
+# does not take over /etc/resolv.conf on install. Left alone, the image has no
+# /etc/resolv.conf at all -- DHCP works (address, gateway, even "DNS:" in
+# networkctl status) but every name lookup fails. Verified on 10.0.21.176.
+#
+# The stub listens on 127.0.0.53 and forwards to the per-link servers, so a
+# lease change needs no rewriting of resolv.conf. The wants symlink is created
+# explicitly rather than trusting a preset to enable the unit on every
+# distribution version.
+if [ -x "$BUILDROOT/usr/lib/systemd/systemd-resolved" ]; then
+    install -d "$BUILDROOT/etc/systemd/system/multi-user.target.wants"
+    ln -sf /usr/lib/systemd/system/systemd-resolved.service \
+       "$BUILDROOT/etc/systemd/system/multi-user.target.wants/systemd-resolved.service"
+    ln -sfn ../run/systemd/resolve/stub-resolv.conf \
+       "$BUILDROOT/etc/resolv.conf"
+else
+    echo "warning: systemd-resolved is not installed -- DHCP supplies the" >&2
+    echo "         link's nameservers, but nothing writes /etc/resolv.conf and" >&2
+    echo "         every name lookup on the device will fail." >&2
+fi

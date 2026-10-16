@@ -1,0 +1,47 @@
+# Template unit for a rehosted instrument firmware.
+#
+# One instance per firmware, staged under /var/lib/regroove/<name>:
+#
+#     systemctl enable --now regroove-firmware@move.service
+#
+# /var is outside the OS image on purpose. The rehosted userspace is the
+# thing being developed; it should be replaceable without an image update,
+# and it is also what keeps the drumlogue's armv7hf world decoupled from
+# the host distro's libc.
+
+[Unit]
+Description=RegrooveOS rehosted firmware (%i)
+After=sound.target
+Wants=sound.target
+
+[Service]
+Type=simple
+# Realtime settings belong on the unit rather than in limits.d: this applies
+# however the service is started, which is what the shipping image needs.
+# The priority is below rtirq's audio IRQ threads so IRQs still preempt the
+# DSP thread.
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+# Infinity must be spelled out here; the unit setting has no "unlimited".
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
+WorkingDirectory=/var/lib/regroove/%i
+ExecStart=/var/lib/regroove/%i/launch
+Restart=on-failure
+RestartSec=1
+
+# Hardening. The rehosted firmware needs the sound devices and its own
+# directory, and nothing else on the system.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/regroove/%i
+# PrivateDevices= must stay off: it would hide /dev/snd along with
+# everything else. DeviceAllow= is the mechanism used instead.
+PrivateDevices=no
+DeviceAllow=char-alsa rw
+
+[Install]
+WantedBy=multi-user.target

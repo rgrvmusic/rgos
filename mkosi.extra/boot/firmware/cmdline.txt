@@ -1,0 +1,1 @@
+root=PARTUUID=7a1c0de0-0001-4000-8000-000000000001 rootfstype=ext4 rw rootwait console=tty1 console=ttyAMA1,115200 quiet

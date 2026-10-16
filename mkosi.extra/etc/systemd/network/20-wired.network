@@ -1,0 +1,27 @@
+# Debian's systemd package ships no active .network file -- everything in
+# /usr/lib/systemd/network/ is either *.example or container-specific -- so
+# with systemd-networkd enabled and nothing to apply, the Ethernet port
+# never came up and the device never had an address to SSH to.
+#
+# Match both naming schemes: the kernel's eth0 and upstream predictable
+# names (end0 on a Pi 4/CM4, enp* if it ever moves behind PCIe).
+[Match]
+Name=en* eth0
+
+[Network]
+DHCP=yes
+
+# Never let the boot wait for a lease. DHCP still runs in the background and
+# the address appears as soon as a server answers; nothing is ordered after
+# it.
+#
+# This setting alone is not sufficient, and on systemd 257 it is actively
+# misleading: with every managed link marked not-required, networkd reports
+# Online state "unknown", systemd-networkd-wait-online finds no link it
+# considers online, and it waits out its full 120-second timeout before
+# failing -- leaving the boot "degraded" and delaying everything ordered after
+# network-online.target. mkosi.finalize therefore masks
+# systemd-networkd-wait-online.service; this line keeps the link out of the
+# online requirement for anything that still asks.
+[Link]
+RequiredForOnline=no

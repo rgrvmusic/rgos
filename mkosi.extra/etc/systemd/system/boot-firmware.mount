@@ -1,0 +1,42 @@
+[Unit]
+Description=Raspberry Pi boot partition (/boot/firmware)
+
+# Mounted by PARTUUID rather than by filesystem UUID, and this is the whole
+# point of the unit.
+#
+# systemd-repart generates /etc/fstab, and for a vfat partition it writes the
+# full UUID it picked for the filesystem. A FAT filesystem cannot store a
+# UUID: mkfs.fat only has a 4-byte volume ID, so the filesystem ends up with
+# a short ID (1707-11AA) while udev is asked for a long one
+# (170711aa-31ff-4d28-9266-3dab455af761). Verified on a built image:
+#
+#     /dev/disk/by-uuid/1707-11AA   -> present
+#     /dev/disk/by-uuid/170711aa-…  -> does not exist
+#
+# The result is that a UUID= entry for this partition can never resolve. It
+# does not fail loudly either: `nofail` means the boot continues, but only
+# after systemd's 90-second device timeout, on every single boot, with
+# /boot/firmware left unmounted.
+#
+# The partition UUID, by contrast, is pinned in mkosi.repart/00-boot.conf, so
+# it is stable across builds and is the correct thing to reference. This is
+# the same reasoning 10-root.conf gives for not declaring MountPoint= on root.
+#
+# No explicit After=/Requires= on the device unit: systemd derives both from
+# What=. If the mount point directory is absent from the root filesystem --
+# which it is, because 10-root.conf excludes /boot/firmware -- systemd
+# creates it.
+
+[Mount]
+What=/dev/disk/by-partuuid/7a1c0de0-0000-4000-8000-000000000001
+Where=/boot/firmware
+Type=vfat
+
+# nodev/nosuid/noexec: nothing on a firmware partition is executed or is
+# setuid. noatime: nothing reads these files at runtime. Deliberately no
+# `discard` -- continuous TRIM on SD and eMMC causes controller stalls, which
+# on a realtime audio appliance is a dropout. See 10-root.conf.
+Options=nodev,nosuid,noexec,noatime
+
+[Install]
+WantedBy=local-fs.target

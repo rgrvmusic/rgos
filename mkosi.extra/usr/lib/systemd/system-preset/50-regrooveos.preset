@@ -1,0 +1,45 @@
+# RegrooveOS systemd presets.
+#
+# Preset files are processed in filename order and the first line matching a
+# unit decides it, so 50- is read before Debian's 90-systemd.preset. That file
+# says nothing about console-getty.service, so the line below is what decides
+# it. (If it ever did, this file would still win, and this comment would be
+# the thing to check.)
+#
+# WHY A PRESET AND NOT A WANTS SYMLINK IN mkosi.extra
+#
+# Putting getty.target.wants/console-getty.service in mkosi.extra does not
+# work, and fails silently. That symlink has to point at
+# /usr/lib/systemd/system/console-getty.service, which is provided by the
+# systemd package and does not exist inside mkosi.extra -- so within the
+# source tree the link dangles, and mkosi does not carry it across. Measured
+# on a built dev image: getty.target.wants contained only getty@tty1.service,
+# the one Debian enables, and console-getty.service was simply absent. The
+# contrast is local-fs.target.wants/boot-firmware.mount, which resolves to
+# ../boot-firmware.mount inside the tree and does survive.
+#
+# A preset is a plain file, so it copies. mkosi applies it by running
+# `systemctl --root=/buildroot preset-all` (run_preset, mkosi/__init__.py)
+# after the extra trees are installed, which is also how mkosi itself enables
+# ssh -- see the 80-mkosi-ssh.preset it writes.
+#
+# WHY console-getty.service AT ALL
+#
+# It runs agetty on /dev/console, and /dev/console is whichever tty the kernel
+# made the preferred console: the last console= on the command line that
+# registered successfully. On a Pi 4 that is ttyAMA1. Naming a tty directly
+# (serial-getty@ttyAMA1.service) would hard-code one board, and the numbering
+# is not guaranteed across Pi 5 / CM5; this follows the board instead, which
+# is the same reason mkosi.conf keeps one config.txt for all four boards.
+#
+# This is needed because systemd's getty generator did not create a serial
+# getty on its own, even though systemd-getty-generator(8) states that
+# redirecting the kernel console with console= "is sufficient to ... get both
+# kernel messages and a getty prompt on a serial TTY". With
+# console=tty1 console=ttyAMA0 console=ttyAMA1 on cmdline.txt and a working
+# PL011, the generator produced getty@tty1 and nothing else, so the box booted
+# to a serial console that printed everything and accepted no login.
+#
+# The equivalent Autologin= patch mkosi applies to this unit (dev profile
+# only) is what turns it into a root shell instead of a login prompt.
+enable console-getty.service

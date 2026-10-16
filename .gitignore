@@ -1,0 +1,13 @@
+# mkosi output and cache
+/build/
+
+# Kernel build tree, downloaded tarball and staged artifacts. All are
+# reproducible from kernel/build.sh and are very large.
+/kernel/linux/
+/kernel/download/
+/kernel/out/
+/kernel/.extract.*
+
+# Never commit signing keys.
+/mkosi.key
+/mkosi.crt

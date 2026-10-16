@@ -1,0 +1,120 @@
+# RegrooveOS - Raspberry Pi firmware configuration
+#
+# A single file covers Pi 4, Pi 5, CM4 and CM5. The Pi firmware supports
+# conditional filters, so board-specific settings go in a [pi4] / [pi5] /
+# [cm4] / [cm5] section rather than needing per-board image variants.
+#
+# Note that the filters are not mutually exclusive: a CM4 matches both
+# [pi4] and [cm4].
+
+arm_64bit=1
+
+# Serial console. cmdline.txt names exactly ONE ttyAMA port, and that is a
+# correctness requirement rather than a preference.
+#
+# On a Pi 4 the PL011 at 7e201000 does not enumerate as ttyAMA0. The shipped
+# device tree aliases serial1 to it (serial0 is the mini-UART at 7e215040),
+# and under QEMU it registers as ttyAMA1 -- the kernel log says
+# "fe201000.serial: ttyAMA1 at MMIO 0xfe201000 ... is a PL011 rev3".
+#
+# Listing console=ttyAMA0 as well, as a hedge, is what stops the console from
+# existing at all:
+#
+#   * printk's try_enable_preferred_console() walks the console= list and
+#     returns on the first *name* match, so only the ttyAMA0 entry is ever
+#     tried and the ttyAMA1 entry is not reached.
+#   * pl011_console_setup() then does
+#         uap = amba_ports[co->index];  if (!uap) return -ENODEV;
+#     and there is no port 0.
+#   * -ENODEV is not -ENOENT, so register_console() skips its
+#     platform-default fallback and gives up silently: no "console [ttyAMA1]
+#     enabled" and no "disabled" line either.
+#
+# The result is a serial port that registers as a tty and never as a console,
+# so nothing can log in on it and console-getty.service never runs. Measured
+# both ways under QEMU: with both names there is no console at all, with
+# ttyAMA1 alone the log says "printk: legacy console [ttyAMA1] enabled".
+#
+# So this file pairs with cmdline.txt, which says console=tty1
+# console=ttyAMA1,115200. tty1 comes first so that ttyAMA1, being last, is the
+# preferred console -- that is what makes /dev/console the serial port, which
+# is in turn what console-getty.service logs in on. If the PL011 ever fails to
+# register, tty1 remains the console and the box is still reachable over HDMI
+# rather than not at all.
+#
+# The cost is Bluetooth. On a Pi 4 the PL011 is wired to the BT module, and
+# enable_uart=1 moves BT onto the mini-UART so the PL011 is free for GPIO
+# 14/15. Audio does not go through it; this is only a trade if BT audio is
+# ever wanted.
+enable_uart=1
+
+# The firmware's own audio driver is not wanted -- rehosted firmwares drive
+# ALSA directly and must not have the SoC audio path claimed underneath them.
+dtparam=audio=off
+
+# We boot without an initramfs. kernel/rt.fragment builds ext4 and the MMC
+# stack into the kernel so it can mount root directly, and cmdline.txt
+# therefore uses a pinned PARTUUID. If root ever moves behind dm-verity or
+# LUKS, this has to become 1 and an initramfs has to be placed here.
+auto_initramfs=0
+
+kernel=kernel8.img
+
+# KMS display. The per-SoC variants are named explicitly (in the [pi4] and
+# [pi5] sections below) instead of using the generic name and letting the
+# firmware's overlay_map.dtb choose a flavour.
+#
+# Measured on a CM4 with firmware 1.20250305: dtoverlay=vc4-kms-v3d applied
+# the BCM2835 overlay (vc4-kms-v3d.dtbo), whose fragments do not match the
+# BCM2711 tree. The firmware dropped it without any kernel-visible error, so
+# the gpu and both hdmi nodes stayed disabled and the display fell back to
+# bcm2708_fb: HDMI0 only, set up once at boot, so the console only came back
+# after the cable was replugged -- and HDMI1 never worked at all. None of the
+# software above the firmware can fix this; from SSH the system looks fine.
+#
+# vc4-kms-v3d-pi4 applies cleanly: vc4-drm binds hvs, hdmi0, hdmi1 and txp,
+# and /dev/dri/card0, card1 and renderD128 appear.
+
+# Waveshare PCM5122 audio board. Its codec answers on i2c1 at 0x4c, and the
+# board presents itself as an IQaudIO DAC+ -- so this is the IQaudIO overlay,
+# not hifiberry-dacplus: the machine drivers bind by the codec's device name,
+# and IQaudIO's is pcm512x.1-004c where HiFiBerry's is pcm512x.1-004d. The
+# codec and both I2S controllers are modules loaded from the DT modalias, so
+# this line only instantiates the card. IQaudIO's DAI link puts the codec in
+# I2S slave mode (CBS_CFS) with the Pi producing the clocks, which is what
+# this board is wired for.
+#
+# force_eeprom_read=0: the board also carries a HAT ID EEPROM on i2c0, whose
+# overlay the firmware would apply on top of this one. That blob is not tied
+# to this kernel tree, and applying both is how HAT cards end up failing to
+# probe. Keep config.txt as the single source of truth instead.
+#
+# Playback only: the PCM5122 has no ADC. That fits the Move's 44.1 kHz
+# stereo path; it cannot supply the drumlogue's six-channel capture.
+force_eeprom_read=0
+dtoverlay=iqaudio-dacplus
+
+# --- Pi 4 / CM4 (BCM2711) -------------------------------------------------
+[pi4]
+# Display: the BCM2711 flavour of KMS (see the note at the top).
+dtoverlay=vc4-kms-v3d-pi4
+
+# Board-specific tweaks (HAT overlays, PCIe, USB role) belong here. The
+# Move's own overrides are worth diffing against, since its carrier board
+# taps the XMOS over SPI.
+#
+# The BCM2711 has a USB 2.0 OTG controller (dwc2) in addition to the xHCI
+# block. On a CM4 its ports are wired to the carrier board and it does not
+# come up in host mode on its own, so anything on USB 2.0 -- a keyboard, a
+# MIDI interface, an audio class device -- is simply absent without this.
+# dr_mode=host is the only sensible mode here: the board is a host.
+dtoverlay=dwc2,dr_mode=host
+
+# --- Pi 5 / CM5 (BCM2712) -------------------------------------------------
+[pi5]
+# Display: the BCM2712 flavour of KMS (see the note at the top).
+dtoverlay=vc4-kms-v3d-pi5
+
+# USB and Ethernet sit behind the RP1 southbridge on this generation, which
+# changes USB-audio jitter characteristics versus the Pi 4's directly
+# attached xHCI. Measure before assuming this is a free upgrade.

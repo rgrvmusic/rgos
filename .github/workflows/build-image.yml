@@ -1,0 +1,138 @@
+# Build a RegrooveOS disk image on GitHub's runners and upload it as a
+# downloadable artifact.
+#
+# The build needs root (loop devices, mounts), an aarch64 binfmt handler, and
+# a recent mkosi. The runner is Ubuntu, but Ubuntu 24.04 ships mkosi 20.2,
+# older than this tree's MinimumVersion=24, and mkosi is not published on
+# PyPI. Debian trixie provides mkosi 25.3 with systemd 257, and it is the
+# distribution the image itself is built from, so the build runs in a Debian
+# trixie container. The settings used in mkosi.conf were checked against
+# 25.3; the pinned mkosi 24.3 from Fedora 41 remains the reference build.
+#
+# Privileged is required for the loop devices mkosi's systemd-repart uses.
+#
+# Cost warning: this builds a full PREEMPT_RT arm64 kernel (about 40 minutes
+# on a 4-core runner) before the image. Expect roughly an hour.
+#
+# Triggers:
+#   * manual run  - choose the profile; defaults to the dev image
+#   * v* tag push - builds the production image
+
+name: Build image
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Image profile to build
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - base
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: ${{ inputs.profile || 'base' }} image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      # Tag pushes have no inputs; they produce the production image.
+      PROFILE: ${{ inputs.profile || 'base' }}
+    steps:
+      - name: Check out the tree
+        uses: actions/checkout@v4
+
+      # The stock root filesystem leaves too little room for the kernel tree,
+      # its objects, the mkosi cache and a 2.5 GiB image. These are the
+      # largest preinstalled toolchains on the image and none are used here.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet \
+                      /usr/local/lib/android \
+                      /opt/ghc \
+                      /usr/local/share/boost \
+                      /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+          avail=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          if [ "$avail" -lt 15 ]; then
+            echo "error: only ${avail}G free; the build needs about 15G" >&2
+            exit 1
+          fi
+
+      # mkosi runs aarch64 binaries from the image while assembling it (dpkg
+      # maintainer scripts, systemd tools). The handler is registered on the
+      # host kernel, so it also applies inside the build container. gdisk and
+      # dosfstools are for check-image, which runs on the host afterwards.
+      - name: Register the aarch64 binfmt handler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              qemu-user-static gdisk dosfstools e2fsprogs
+          sudo systemctl restart systemd-binfmt
+          test -f /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      # Debian trixie: mkosi 25.3 and the systemd tools it needs, plus the
+      # aarch64 cross toolchain and the kernel build dependencies. Everything
+      # runs inside the container as root, including mkosi.
+      - name: Build the kernel and image
+        run: |
+          docker run --privileged --rm \
+            -v "$PWD:/work" -w /work \
+            -e PROFILE \
+            debian:trixie-slim bash -euxc '
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                --no-install-recommends \
+                  mkosi bubblewrap \
+                  dosfstools e2fsprogs gdisk mtools \
+                  qemu-user-static debian-archive-keyring ca-certificates \
+                  build-essential gcc-aarch64-linux-gnu \
+                  binutils-aarch64-linux-gnu \
+                  bc bison flex libssl-dev libelf-dev dwarves \
+                  rsync cpio kmod xz-utils perl python3 diffutils curl \
+                  gzip tar
+              make kernel
+              if [ "$PROFILE" = dev ]; then
+                make dev
+              else
+                make build
+              fi
+            '
+
+      # The same static inspection used locally. It needs root for the loop
+      # device, and it is the only check that can assert anything about the
+      # boot partition, so a broken image does not become a published artifact.
+      - name: Inspect the image
+        run: |
+          if [ "$PROFILE" = dev ]; then
+            raw=build/regrooveos-dev_1.raw
+          else
+            raw=build/regrooveos_1.raw
+          fi
+          ls -lh "$raw"
+          sudo env IMAGE="$raw" make check-image
+          (cd build && sha256sum "$(basename "$raw")" > "$(basename "$raw").sha256")
+          cat "build/$(basename "$raw").sha256"
+
+      - name: Upload the image
+        uses: actions/upload-artifact@v4
+        with:
+          name: regrooveos-${{ inputs.profile || 'base' }}-image
+          path: |
+            build/*.raw
+            build/*.sha256
+          if-no-files-found: error
+          retention-days: 14

@@ -174,6 +174,25 @@ ln -sf /dev/null "$BUILDROOT/etc/systemd/system/systemd-firstboot.service"
 ln -sf /dev/null \
    "$BUILDROOT/etc/systemd/system/systemd-networkd-wait-online.service"
 
+# systemd-sysupdate is upstream's unattended update machinery, and the built
+# image tree comes out with both timers enabled in
+# /etc/systemd/system/timers.target.wants/. They then fire on boot and every
+# few hours: systemd-sysupdate.service scans the transfer definitions under
+# /etc/sysupdate.d, and systemd-sysupdate-reboot.service calls
+# `systemd-sysupdate reboot` daily at 04:10 plus up to 30 minutes of jitter.
+#
+# This image has no transfer definitions and no A/B update mechanism --
+# firmware and userspace are replaced by reflashing a card -- so the timers
+# only wake the device for an update with nothing to do, and the reboot unit
+# is a reboot trigger on something meant to stay up and make sound. Mask all
+# four, service and timer, so neither the schedule nor a manual start can run
+# them; a mask also survives `systemctl preset-all`, which is why this is a
+# mask rather than a preset of our own.
+for unit in systemd-sysupdate.service systemd-sysupdate.timer \
+            systemd-sysupdate-reboot.service systemd-sysupdate-reboot.timer; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
+
 # DNS. networkd is a DHCP client, not a resolver: it records the nameservers
 # it receives in its own link state and stops there. systemd-resolved is what
 # turns them into something glibc can use, and Debian's package deliberately

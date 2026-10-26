@@ -324,6 +324,27 @@ else
     bad "systemd-networkd-wait-online NOT masked -- 120s timeout, boot ends degraded"
 fi
 
+# The image carries both sysupdate timers enabled in
+# timers.target.wants/. There are no transfer definitions under
+# /etc/sysupdate.d and no A/B layout, so the only thing they can do is wake
+# the box for an update that does nothing, and the reboot unit calls
+# `systemd-sysupdate reboot` daily at 04:10. Masked by mkosi.finalize.
+sysupdate_unmasked=
+for unit in systemd-sysupdate.service systemd-sysupdate.timer \
+            systemd-sysupdate-reboot.service systemd-sysupdate-reboot.timer; do
+    if [ -L "$ROOTMNT/etc/systemd/system/$unit" ] && \
+       [ "$(readlink "$ROOTMNT/etc/systemd/system/$unit")" = /dev/null ]; then
+        :
+    else
+        sysupdate_unmasked="$sysupdate_unmasked $unit"
+    fi
+done
+if [ -z "$sysupdate_unmasked" ]; then
+    ok "systemd-sysupdate units masked (no unattended update or reboot)"
+else
+    bad "systemd-sysupdate units NOT masked:$sysupdate_unmasked"
+fi
+
 # DHCP supplies the link's nameservers, but networkd only records them: it is
 # a DHCP client, not a resolver. systemd-resolved consumes them and serves
 # 127.0.0.53, and /etc/resolv.conf must point at that stub or glibc has no
@@ -454,6 +475,14 @@ case "$imgid" in
             else
                 bad "archive keyring missing -- apt-get update cannot verify the archive"
             fi
+            # Dev-only tooling: conversion/assertion helpers for merged /usr.
+            # It does not merge /usr/bin and /usr/sbin (see the symlink checks
+            # below), so do not read its presence as clearing the taint.
+            if dpkg-query --admindir="$ROOTMNT/var/lib/dpkg" -W usrmerge >/dev/null 2>&1; then
+                ok "usrmerge tooling present (dev image)"
+            else
+                bad "usrmerge MISSING from the dev image -- the dev profile declares it"
+            fi
         else
             bad "apt-get MISSING from the dev image -- nothing can be installed on the device"
         fi
@@ -464,6 +493,11 @@ case "$imgid" in
         else
             ok "no apt-get in the production image (rebuilt, not patched)"
         fi
+        if dpkg-query --admindir="$ROOTMNT/var/lib/dpkg" -W usrmerge >/dev/null 2>&1; then
+            meh "usrmerge present in the production image -- dev-only tooling"
+        else
+            ok "no usrmerge in the production image (dev-only tooling)"
+        fi
         ;;
 esac
 for f in etc/issue etc/motd; do
@@ -473,6 +507,19 @@ done
 for pkg in systemd kmod alsa-utils raspi-firmware; do
     dpkg-query --admindir="$ROOTMNT/var/lib/dpkg" -W "$pkg" >/dev/null 2>&1 \
         && ok "$pkg installed" || bad "$pkg NOT installed"
+done
+
+# Merged /usr. base-files ships these three as symlinks into /usr, and that
+# is all Debian merges: /usr/sbin stays a real directory. systemd's
+# "unmerged-bin" taint tag reports exactly that split, and on Debian it is
+# expected (bug #1089022, wontfix). Do not "fix" it by symlinking /usr/sbin
+# to /usr/bin: that breaks the merged-usr preinst checks in udev and systemd.
+for d in bin sbin lib; do
+    if [ -L "$ROOTMNT/$d" ] && [ "$(readlink "$ROOTMNT/$d")" = "usr/$d" ]; then
+        ok "/$d -> usr/$d (merged /usr)"
+    else
+        bad "/$d is not a symlink to usr/$d -- the tree is not merged-/usr"
+    fi
 done
 
 # The root copy would be dead weight and, worse, could diverge from the

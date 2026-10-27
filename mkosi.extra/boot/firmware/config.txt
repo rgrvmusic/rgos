@@ -89,8 +89,7 @@ kernel=kernel8.img
 # to this kernel tree, and applying both is how HAT cards end up failing to
 # probe. Keep config.txt as the single source of truth instead.
 #
-# Playback only: the PCM5122 has no ADC. That fits the Move's 44.1 kHz
-# stereo path; it cannot supply the drumlogue's six-channel capture.
+# Playback only: the PCM5122 has no ADC.
 force_eeprom_read=0
 dtoverlay=iqaudio-dacplus
 

@@ -64,3 +64,15 @@ CONFIG_MMC_SDHCI_BRCMSTB=y
 # builds ext4 and the MMC stack in rather than leaving them modular. Kconfig
 # selects XZ_DEC alongside it, so the xz decompressor is built in too.
 CONFIG_MODULE_DECOMPRESS=y
+
+# --- AArch32 compatibility ------------------------------------------------
+#
+# Some userspace is armv7hf and runs at EL0 through the kernel's
+# AArch32 compatibility layer (CONFIG_COMPAT=y is already in the board
+# defconfig). 32-bit code can perform misaligned multi-word loads and stores
+# -- LDRD/STRD, and LDM/STM forms -- and Linux on AArch32 has always fixed
+# those up in software. arm64 does it for compat processes only when this
+# option is set: without it the fault is delivered to the process as SIGBUS.
+# The handler is the ARM port's alignment algorithm, ported to
+# arch/arm64/kernel/compat_alignment.c and called from do_alignment_fault().
+CONFIG_COMPAT_ALIGNMENT_FIXUPS=y

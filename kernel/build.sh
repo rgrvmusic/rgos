@@ -119,6 +119,17 @@ if grep -q '^CONFIG_MODULE_COMPRESS_XZ=y' .config &&
     exit 1
 fi
 
+# The rehosted userspace is 32-bit. Without this, a misaligned
+# multi-word access in it is SIGBUS instead of being fixed up, and the failure
+# only appears when the firmware runs on the device. A plain bool under an
+# already-set CONFIG_COMPAT, but check anyway: a silent drop is invisible.
+if ! grep -q '^CONFIG_COMPAT_ALIGNMENT_FIXUPS=y' .config; then
+    echo "error: CONFIG_COMPAT_ALIGNMENT_FIXUPS is not set after olddefconfig." >&2
+    echo "       32-bit misaligned multi-word accesses would fault with SIGBUS." >&2
+    echo "       See rt.fragment." >&2
+    exit 1
+fi
+
 echo "==> building"
 make ARCH=arm64 CROSS_COMPILE="$CROSS" -j"$JOBS" Image dtbs modules
 

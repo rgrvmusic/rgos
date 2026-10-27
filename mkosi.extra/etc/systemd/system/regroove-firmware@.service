@@ -2,11 +2,9 @@
 #
 # One instance per firmware, staged under /var/lib/regroove/<name>:
 #
-#     systemctl enable --now regroove-firmware@move.service
-#
 # /var is outside the OS image on purpose. The rehosted userspace is the
 # thing being developed; it should be replaceable without an image update,
-# and it is also what keeps the drumlogue's armv7hf world decoupled from
+# and it is also what keeps a armv7hf world decoupled from
 # the host distro's libc.
 
 [Unit]
